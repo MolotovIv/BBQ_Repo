@@ -1,4 +1,5 @@
 const { Telegraf } = require('telegraf');
+const express = require('express');
 require('dotenv').config();
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -16,6 +17,11 @@ const products = {
 
 // Временное хранилище для выбора веса
 const waitingForWeight = new Map();
+
+// ID администраторов (замените на свои)
+const ADMIN_IDS = [1323252853]; // Добавьте через запятую, если нужно несколько
+
+// ==================== КОМАНДЫ БОТА ====================
 
 bot.start((ctx) => {
     ctx.reply(
@@ -155,7 +161,7 @@ async function addToCartWithWeight(ctx, weight, productId = null) {
     await ctx.answerCbQuery();
 }
 
-// Показать корзину (БЕЗ Markdown)
+// Показать корзину
 async function showCart(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId) || [];
@@ -188,7 +194,6 @@ async function showCart(ctx) {
     await ctx.reply(text, { reply_markup: keyboard });
 }
 
-// Показать корзину по команде
 bot.action('view_cart', (ctx) => showCart(ctx));
 bot.command('cart', (ctx) => showCart(ctx));
 
@@ -214,12 +219,13 @@ bot.action('clear_cart', (ctx) => {
     ctx.answerCbQuery('Корзина очищена');
     ctx.reply('🗑 Корзина очищена!');
 });
+
 bot.command('clear', (ctx) => {
     carts.delete(ctx.from.id);
     ctx.reply('🗑 Корзина очищена!');
 });
 
-// Оформление заказа (БЕЗ Markdown)
+// Оформление заказа
 bot.action('checkout', (ctx) => checkout(ctx));
 bot.command('order', (ctx) => checkout(ctx));
 
@@ -247,9 +253,7 @@ async function checkout(ctx) {
     orderText += `🆔 ID: ${userId}\n`;
     orderText += `📛 Username: @${ctx.from.username || 'нет username'}`;
 
-    // ВАШ ID (уже подставлен из ошибки)
-    const ADMIN_IDS = [1323252853, 987654321];
-
+    // Отправляем всем администраторам
     for (const adminId of ADMIN_IDS) {
         try {
             await bot.telegram.sendMessage(adminId, orderText);
@@ -267,8 +271,46 @@ async function checkout(ctx) {
     );
 }
 
-// Запуск
-bot.launch(() => console.log('🔥 Бот Molotov BBQ запущен!'));
+// ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+const app = express();
+app.use(express.json());
+
+// Ручка для проверки, что бот жив
+app.get('/', (req, res) => {
+    res.send('🔥 Molotov BBQ Bot is running!');
+});
+
+// Ручка для вебхуков Telegram
+app.post('/webhook', async (req, res) => {
+    try {
+        await bot.handleUpdate(req.body);
+        res.send('ok');
+    } catch (error) {
+        console.error('Ошибка обработки вебхука:', error);
+        res.status(500).send('error');
+    }
+});
+
+// Устанавливаем вебхук при запуске
+const setWebhook = async () => {
+    const url = process.env.RENDER_EXTERNAL_URL;
+    if (!url) {
+        console.error('RENDER_EXTERNAL_URL не задан');
+        return;
+    }
+
+    try {
+        await bot.telegram.setWebhook(`${url}/webhook`);
+        console.log(`✅ Вебхук установлен: ${url}/webhook`);
+    } catch (error) {
+        console.error('Ошибка установки вебхука:', error);
+    }
+};
+
+// Запускаем сервер
+const port = process.env.PORT || 3000;
+app.listen(port, async () => {
+    console.log(`🚀 Сервер запущен на порту ${port}`);
+    await setWebhook();
+});
