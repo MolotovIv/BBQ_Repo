@@ -47,6 +47,13 @@ bot.command('menu', (ctx) => {
         }
     });
 });
+bot.command('cart', (ctx) => showCart(ctx));
+bot.command('clear', (ctx) => {
+    carts.delete(ctx.from.id);
+    ctx.reply('🗑 Корзина очищена!');
+});
+bot.command('order', (ctx) => checkout(ctx));
+
 
 // Выбор товара
 bot.action('select_ribs', (ctx) => askForWeight(ctx, 'ribs'));
@@ -200,7 +207,7 @@ async function showCart(ctx) {
 }
 
 bot.action('view_cart', (ctx) => showCart(ctx));
-bot.command('cart', (ctx) => showCart(ctx));
+
 
 // Удаление товара
 bot.command(/del_(\d+)/, (ctx) => {
@@ -225,14 +232,9 @@ bot.action('clear_cart', (ctx) => {
     ctx.reply('🗑 Корзина очищена!');
 });
 
-bot.command('clear', (ctx) => {
-    carts.delete(ctx.from.id);
-    ctx.reply('🗑 Корзина очищена!');
-});
 
 // Оформление заказа
 bot.action('checkout', (ctx) => checkout(ctx));
-bot.command('order', (ctx) => checkout(ctx));
 
 async function checkout(ctx) {
     const userId = ctx.from.id;
