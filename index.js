@@ -99,6 +99,11 @@ bot.action('weight_cancel', async (ctx) => {
 
 // Обработка текстового ввода веса
 bot.on('text', async (ctx) => {
+    if (ctx.message.text.startsWith('/')) {
+        console.log(`⏭️ Пропускаем команду в обработчике веса: ${ctx.message.text}`);
+        return;  // Выходим, не мешаем другим обработчикам
+    }
+
     const userId = ctx.from.id;
     if (!waitingForWeight.has(userId)) return;
 
