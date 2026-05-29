@@ -281,6 +281,10 @@ app.get('/', (req, res) => {
     res.send('🔥 Molotov BBQ Bot is running!');
 });
 
+app.get('/webhook', (req, res) => {
+    res.send('Webhook endpoint is ready');
+});
+
 // Ручка для вебхуков Telegram
 app.post('/webhook', async (req, res) => {
     try {
