@@ -112,7 +112,6 @@ bot.action('weight_cancel', async (ctx) => {
 });
 
 // ==================== ДОБАВЛЕНИЕ В КОРЗИНУ ====================
-
 async function addToCartWithWeight(ctx, weight, productId = null) {
     let userId = ctx.from.id;
     let actualProductId = productId;
@@ -149,8 +148,28 @@ async function addToCartWithWeight(ctx, weight, productId = null) {
     carts.set(userId, cart);
     const weightText = weight >= 1 ? `${weight} кг` : `${weight * 1000} г`;
 
-    await ctx.reply(`✅ ${product.name}\n⚖️ Вес: ${weightText}\n💰 Сумма: ${sum}₽\n\nТовар добавлен в корзину!`);
-    await ctx.answerCbQuery();
+    // Подсчитываем актуальное состояние корзины
+    const items = cart.filter(item => item.id && item.name);
+    const totalItems = items.length;
+    const totalSum = items.reduce((acc, item) => acc + (item.totalPrice || 0), 0);
+
+    // Отправляем сообщение с подтверждением и кнопками
+    await ctx.reply(
+        `✅ ${product.name}\n⚖️ Вес: ${weightText}\n💰 Сумма: ${sum}₽\n\n` +
+        `🛒 В корзине: ${totalItems} товаров на ${totalSum}₽\n\n` +
+        `Товар добавлен в корзину!`,
+        {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '🛒 Перейти в корзину', callback_data: 'view_cart' }],
+                    [{ text: '📦 Оформить заказ', callback_data: 'checkout' }]
+                ]
+            }
+        }
+    );
+
+    // Всплывающее уведомление (короткое, для обратной связи)
+    await ctx.answerCbQuery(`✅ +${weightText} ${product.name}`);
 }
 
 // ==================== КОРЗИНА ====================
