@@ -1,6 +1,6 @@
 const { Telegraf } = require('telegraf');
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
+const Database = require('better-sqlite3');
 const path = require('path');
 require('dotenv').config();
 
@@ -18,7 +18,8 @@ const {
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ==================== БАЗА ДАННЫХ SQLITE ====================
-const db = new sqlite3.Database(path.join(__dirname, 'referrals.db'));
+
+const db = new Database(path.join(__dirname, 'referrals.db'));
 
 // Создаём таблицы
 db.run(`
