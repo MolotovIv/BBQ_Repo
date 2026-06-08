@@ -1,58 +1,195 @@
 const { Telegraf } = require('telegraf');
 const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 require('dotenv').config();
+
+// Импортируем константы и товары из отдельного файла
+const {
+    products,
+    ADMIN_IDS,
+    getMenuKeyboard,
+    getWeightKeyboard,
+    getCartKeyboard,
+    getAddToCartKeyboard,
+    getCommentKeyboard
+} = require('./consts.js');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
+// ==================== БАЗА ДАННЫХ SQLITE ====================
+const db = new sqlite3.Database(path.join(__dirname, 'referrals.db'));
+
+// Создаём таблицы
+db.run(`
+    CREATE TABLE IF NOT EXISTS referrals (
+        user_id INTEGER PRIMARY KEY,
+        invited_by INTEGER,
+        created_at INTEGER,
+        order_made INTEGER DEFAULT 0,
+        bonus_given INTEGER DEFAULT 0
+    )
+`);
+
+db.run(`
+    CREATE TABLE IF NOT EXISTS referral_counts (
+        user_id INTEGER PRIMARY KEY,
+        invite_count INTEGER DEFAULT 0,
+        reward_count INTEGER DEFAULT 0
+    )
+`);
+
+// Функции для работы с БД
+function saveReferral(userId, invitedBy) {
+    db.run(
+        `INSERT OR IGNORE INTO referrals (user_id, invited_by, created_at) VALUES (?, ?, ?)`,
+        [userId, invitedBy, Date.now()]
+    );
+    db.run(
+        `INSERT OR IGNORE INTO referral_counts (user_id, invite_count) VALUES (?, 0)`,
+        [invitedBy]
+    );
+    db.run(
+        `UPDATE referral_counts SET invite_count = invite_count + 1 WHERE user_id = ?`,
+        [invitedBy]
+    );
+}
+
+function getReferralInfo(userId, callback) {
+    db.get(`SELECT * FROM referrals WHERE user_id = ?`, [userId], (err, row) => {
+        callback(row || null);
+    });
+}
+
+function getInviteCount(userId, callback) {
+    db.get(`SELECT invite_count, reward_count FROM referral_counts WHERE user_id = ?`, [userId], (err, row) => {
+        callback(row || { invite_count: 0, reward_count: 0 });
+    });
+}
+
+function markOrderMade(userId) {
+    db.run(`UPDATE referrals SET order_made = 1 WHERE user_id = ?`, [userId]);
+}
+
+function markBonusGiven(referredUserId, referrerId) {
+    db.run(`UPDATE referrals SET bonus_given = 1 WHERE user_id = ?`, [referredUserId]);
+    db.run(`UPDATE referral_counts SET reward_count = reward_count + 1 WHERE user_id = ?`, [referrerId]);
+}
+
+function getReferralsStats(callback) {
+    db.all(`
+        SELECT rc.user_id, rc.invite_count, rc.reward_count 
+        FROM referral_counts rc 
+        ORDER BY rc.invite_count DESC 
+        LIMIT 10
+    `, (err, rows) => {
+        callback(rows || []);
+    });
+}
+
 // ==================== ХРАНИЛИЩА ====================
-const carts = new Map();              // Корзины пользователей
-const waitingForWeight = new Map();   // Ожидание ввода веса
-const waitingForComment = new Map();  // Ожидание ввода комментария
-
-// ==================== ТОВАРЫ ====================
-const products = {
-    ribs: { name: '🍖 Ребра свиные', price: 2200, unit: 'кг' },
-    brisket: { name: '🥩 Брискет', price: 4500, unit: 'кг' },
-    pork: { name: '🐖 Свинина', price: 2500, unit: 'кг' },
-    turkey: { name: '🦃 Индейка', price: 2000, unit: 'кг' }
-};
-
-// ID администраторов (замените на свои)
-const ADMIN_IDS = [1323252853, 1069660149];
+const carts = new Map();
+const waitingForWeight = new Map();
+const waitingForComment = new Map();
 
 // ==================== КОМАНДЫ БОТА ====================
+
 bot.start(async (ctx) => {
-    // Показываем индикатор загрузки
-    const msg = await ctx.reply('🔄 Загружаем меню... 🔥');
+    const userId = ctx.from.id;
+    const startPayload = ctx.startPayload;
 
-    // Искусственная задержка (опционально, можно убрать)
-    await new Promise(resolve => setTimeout(resolve, 500));
+    if (startPayload && startPayload.startsWith('ref_')) {
+        const referrerId = parseInt(startPayload.replace('ref_', ''));
 
-    // Редактируем сообщение
-    await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        msg.message_id,
-        null,
+        if (referrerId !== userId) {
+            getReferralInfo(userId, (info) => {
+                if (!info) {
+                    saveReferral(userId, referrerId);
+
+                    try {
+                        bot.telegram.sendMessage(referrerId,
+                            `🎉 По вашей ссылке зарегистрировался новый пользователь ${ctx.from.first_name}!\n\n` +
+                            `Когда он сделает первый заказ, вы получите подарок!`
+                        );
+                    } catch (e) { }
+
+                    ctx.reply(
+                        `🎁 Вы пришли по ссылке от друга!\n\n` +
+                        `🍖 Добро пожаловать в Molotov BBQ!\n\n` +
+                        `📋 Команды:\n` +
+                        `/menu — посмотреть меню\n` +
+                        `/cart — моя корзина\n` +
+                        `/order — оформить заказ\n` +
+                        `/clear — очистить корзину\n` +
+                        `/invite — получить ссылку для друга`
+                    );
+                    return;
+                }
+            });
+            return;
+        }
+    }
+
+    ctx.reply(
         '🍖 Добро пожаловать в Molotov BBQ!\n\n' +
         '📋 Команды:\n' +
         '/menu — посмотреть меню\n' +
         '/cart — моя корзина\n' +
         '/order — оформить заказ\n' +
-        '/clear — очистить корзину'
+        '/clear — очистить корзину\n\n' +
+        '👥 Есть друг? /invite — получи ссылку и получай подарки за каждого друга!'
     );
+});
+
+bot.command('invite', async (ctx) => {
+    const userId = ctx.from.id;
+    const botUsername = ctx.botInfo.username;
+    const inviteLink = `https://t.me/${botUsername}?start=ref_${userId}`;
+
+    getInviteCount(userId, (data) => {
+        let bonusText = '';
+        if (data.reward_count >= 3) {
+            bonusText = `\n\n🏆 СУПЕР! Вы получили ${data.reward_count} подарков! Закажите брискет со скидкой 15% — просто напишите нам!`;
+        } else if (data.reward_count >= 1) {
+            bonusText = `\n\n✅ Вы уже получили ${data.reward_count} ${data.reward_count === 1 ? 'подарок' : 'подарка'}!`;
+        } else {
+            bonusText = `\n\n🎁 За каждого друга, который сделает заказ, вы получите 200 г свинины в подарок!`;
+        }
+
+        ctx.reply(
+            `👥 ВАША РЕФЕРАЛЬНАЯ ССЫЛКА\n\n` +
+            `🔗 ${inviteLink}\n\n` +
+            `📊 Приглашено друзей: ${data.invite_count}\n` +
+            `🎁 Получено подарков: ${data.reward_count}${bonusText}\n\n` +
+            `💡 Просто отправьте ссылку другу. Когда он перейдёт и сделает заказ — вы получите подарок!`
+        );
+    });
+});
+
+bot.command('stats', async (ctx) => {
+    const userId = ctx.from.id;
+    if (!ADMIN_IDS.includes(userId)) {
+        return ctx.reply('❌ Только для администратора');
+    }
+
+    getReferralsStats((stats) => {
+        if (stats.length === 0) {
+            return ctx.reply('📊 Пока нет реферальных переходов');
+        }
+
+        let text = '📊 ТОП ПРИГЛАСИТЕЛЕЙ:\n\n';
+        stats.forEach((stat, index) => {
+            text += `${index + 1}. ID ${stat.user_id}: ${stat.invite_count} приглаш. (${stat.reward_count} подарков)\n`;
+        });
+        text += `\n📦 Всего в системе: ${stats.length} пользователей`;
+
+        ctx.reply(text);
+    });
 });
 
 bot.command('menu', (ctx) => {
     ctx.reply('🔥 Наше меню. Нажимай — выбирай вес и добавляй в корзину:', {
-        reply_markup: {
-            inline_keyboard: [
-                [{ text: '🍖 Ребра свиные — 2200₽/кг', callback_data: 'select_ribs' }],
-                [{ text: '🥩 Брискет — 4500₽/кг', callback_data: 'select_brisket' }],
-                [{ text: '🐖 Свинина — 2500₽/кг', callback_data: 'select_pork' }],
-                [{ text: '🦃 Индейка — 2000₽/кг', callback_data: 'select_turkey' }],
-                [{ text: '🛒 Перейти в корзину', callback_data: 'view_cart' }]
-            ]
-        }
+        reply_markup: getMenuKeyboard()
     });
 });
 
@@ -76,19 +213,9 @@ async function askForWeight(ctx, productId) {
     const product = products[productId];
     waitingForWeight.set(ctx.from.id, productId);
 
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: '🔹 300 г', callback_data: 'weight_0.3' }, { text: '🔹 500 г', callback_data: 'weight_0.5' }],
-            [{ text: '🔹 700 г', callback_data: 'weight_0.7' }, { text: '🔹 1 кг', callback_data: 'weight_1.0' }],
-            [{ text: '🔹 1.5 кг', callback_data: 'weight_1.5' }, { text: '🔹 2 кг', callback_data: 'weight_2.0' }],
-            [{ text: '✏️ Свой вес (кратно 100 г)', callback_data: 'weight_custom' }],
-            [{ text: '❌ Отмена', callback_data: 'weight_cancel' }]
-        ]
-    };
-
     await ctx.reply(
         `${product.name}\n💰 Цена: ${product.price}₽/кг\n\n⚖️ Выберите вес (от 300 г до 5 кг, кратно 100 г):`,
-        { reply_markup: keyboard }
+        { reply_markup: getWeightKeyboard() }
     );
 }
 
@@ -112,6 +239,7 @@ bot.action('weight_cancel', async (ctx) => {
 });
 
 // ==================== ДОБАВЛЕНИЕ В КОРЗИНУ ====================
+
 async function addToCartWithWeight(ctx, weight, productId = null) {
     let userId = ctx.from.id;
     let actualProductId = productId;
@@ -148,27 +276,19 @@ async function addToCartWithWeight(ctx, weight, productId = null) {
     carts.set(userId, cart);
     const weightText = weight >= 1 ? `${weight} кг` : `${weight * 1000} г`;
 
-    // Подсчитываем актуальное состояние корзины
     const items = cart.filter(item => item.id && item.name);
     const totalItems = items.length;
     const totalSum = items.reduce((acc, item) => acc + (item.totalPrice || 0), 0);
 
-    // Отправляем сообщение с подтверждением и кнопками
     await ctx.reply(
         `✅ ${product.name}\n⚖️ Вес: ${weightText}\n💰 Сумма: ${sum}₽\n\n` +
         `🛒 В корзине: ${totalItems} товаров на ${totalSum}₽\n\n` +
         `Товар добавлен в корзину!`,
         {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '🛒 Перейти в корзину', callback_data: 'view_cart' }],
-                    [{ text: '📦 Оформить заказ', callback_data: 'checkout' }]
-                ]
-            }
+            reply_markup: getAddToCartKeyboard()
         }
     );
 
-    // Всплывающее уведомление (короткое, для обратной связи)
     await ctx.answerCbQuery(`✅ +${weightText} ${product.name}`);
 }
 
@@ -178,7 +298,6 @@ async function showCart(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId) || [];
 
-    // Фильтруем только товары
     const items = cart.filter(item => item.id && item.name);
 
     if (items.length === 0) {
@@ -199,25 +318,16 @@ async function showCart(ctx) {
 
     text += `\n💰 ИТОГО: ${total} ₽`;
 
-    // Показываем комментарий, если есть
     if (cart.userComment) {
         text += `\n📝 Комментарий: ${cart.userComment.substring(0, 50)}`;
         if (cart.userComment.length > 50) text += '...';
     }
 
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: '📦 Оформить заказ', callback_data: 'checkout' }],
-            [{ text: '🗑 Очистить корзину', callback_data: 'clear_cart' }]
-        ]
-    };
-
-    await ctx.reply(text, { reply_markup: keyboard });
+    await ctx.reply(text, { reply_markup: getCartKeyboard() });
 }
 
 bot.action('view_cart', (ctx) => showCart(ctx));
 
-// Удаление товара
 bot.command(/del_(\d+)/, (ctx) => {
     const userId = ctx.from.id;
     const index = parseInt(ctx.match[1]);
@@ -233,7 +343,6 @@ bot.command(/del_(\d+)/, (ctx) => {
     }
 });
 
-// Очистка корзины (кнопка)
 bot.action('clear_cart', (ctx) => {
     carts.delete(ctx.from.id);
     waitingForWeight.delete(ctx.from.id);
@@ -248,19 +357,11 @@ async function askForComment(ctx) {
     const userId = ctx.from.id;
     waitingForComment.set(userId, true);
 
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: '📝 Пропустить (без комментария)', callback_data: 'skip_comment' }],
-            [{ text: '❌ Отмена заказа', callback_data: 'cancel_order' }]
-        ]
-    };
-
     await ctx.reply(
         '📝 Оставьте комментарий к заказу (необязательно)\n\n' +
         'Например: время доставки, особые пожелания, адрес самовывоза и т.д.\n\n' +
-        'Рекомендем оставить номер для связи и указать примерное время доставки для вашего удобства' +
         '💡 Просто напишите текст или нажмите "Пропустить"',
-        { reply_markup: keyboard }
+        { reply_markup: getCommentKeyboard() }
     );
 }
 
@@ -286,6 +387,8 @@ bot.action('cancel_order', async (ctx) => {
     await ctx.reply('❌ Оформление заказа отменено');
     await showCart(ctx);
 });
+
+// ==================== ФИНАЛЬНОЕ ОФОРМЛЕНИЕ ЗАКАЗА ====================
 
 async function finalizeOrder(ctx) {
     const userId = ctx.from.id;
@@ -318,13 +421,33 @@ async function finalizeOrder(ctx) {
         orderText += `\n\n📝 Комментарий: не указан`;
     }
 
-    for (const adminId of ADMIN_IDS) {
-        try {
-            await bot.telegram.sendMessage(adminId, orderText);
-        } catch (error) {
-            console.error(`Ошибка отправки админу ${adminId}:`, error);
+    getReferralInfo(userId, (referralInfo) => {
+        if (referralInfo && referralInfo.invited_by && !referralInfo.bonus_given) {
+            const referrerId = referralInfo.invited_by;
+
+            markBonusGiven(userId, referrerId);
+
+            orderText += `\n\n🎁 РЕФЕРАЛ: пришёл по ссылке от ${referrerId}`;
+
+            try {
+                bot.telegram.sendMessage(referrerId,
+                    `🎁 ПОЗДРАВЛЯЕМ!\n\n` +
+                    `Ваш друг ${ctx.from.first_name} сделал первый заказ!\n\n` +
+                    `Вы получаете 200 г свинины в подарок к следующему заказу!\n` +
+                    `Просто напишите нам "БОНУС" при оформлении.`
+                );
+            } catch (e) { }
         }
-    }
+        markOrderMade(userId);
+
+        for (const adminId of ADMIN_IDS) {
+            try {
+                bot.telegram.sendMessage(adminId, orderText);
+            } catch (error) {
+                console.error(`Ошибка отправки админу ${adminId}:`, error);
+            }
+        }
+    });
 
     carts.delete(userId);
     waitingForComment.delete(userId);
@@ -335,8 +458,6 @@ async function finalizeOrder(ctx) {
         'Спасибо, что выбрали Molotov BBQ! 🔥'
     );
 }
-
-// ==================== ОФОРМЛЕНИЕ ЗАКАЗА ====================
 
 async function checkout(ctx) {
     const userId = ctx.from.id;
@@ -351,16 +472,14 @@ async function checkout(ctx) {
 
 bot.action('checkout', (ctx) => checkout(ctx));
 
-// ==================== ОБРАБОТЧИК ТЕКСТА (должен быть последним!) ====================
+// ==================== ОБРАБОТЧИК ТЕКСТА ====================
 
 bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
     const messageText = ctx.message.text;
 
-    // Пропускаем команды
     if (messageText.startsWith('/')) return;
 
-    // Если пользователь ожидает ввод веса
     if (waitingForWeight.has(userId)) {
         const productId = waitingForWeight.get(userId);
         let weight = parseFloat(messageText.replace(',', '.'));
@@ -380,7 +499,6 @@ bot.on('text', async (ctx) => {
         return;
     }
 
-    // Если пользователь ожидает ввод комментария
     if (waitingForComment.has(userId)) {
         waitingForComment.delete(userId);
 
@@ -394,12 +512,12 @@ bot.on('text', async (ctx) => {
         return;
     }
 });
+
 // ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
 
 const app = express();
 app.use(express.json());
 
-// Ручка для проверки, что бот жив
 app.get('/', (req, res) => {
     res.send('🔥 Molotov BBQ Bot is running!');
 });
@@ -408,8 +526,8 @@ app.get('/webhook', (req, res) => {
     res.send('Webhook endpoint is ready');
 });
 
-// Ручка для вебхуков Telegram
 app.post('/webhook', async (req, res) => {
+    console.log('📩 Получен вебхук');
     try {
         await bot.handleUpdate(req.body);
         res.send('ok');
@@ -419,7 +537,6 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// Устанавливаем вебхук при запуске
 const setWebhook = async () => {
     const url = process.env.RENDER_EXTERNAL_URL;
     if (!url) {
@@ -435,7 +552,6 @@ const setWebhook = async () => {
     }
 };
 
-// Запускаем сервер
 const port = process.env.PORT || 3000;
 app.listen(port, async () => {
     console.log(`🚀 Сервер запущен на порту ${port}`);
