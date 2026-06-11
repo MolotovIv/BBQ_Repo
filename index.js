@@ -25,10 +25,10 @@ const ADMIN_IDS = [1323252853, 1069660149];
 // Клавиатура выбора веса (только кнопки, без ручного ввода)
 function getWeightKeyboard(productId) {
     const weightOptions = {
-        ribs: ['0.45', '0.9', '1.35', '1.8'],
-        brisket: ['0.2', '0.4', '0.6', '0.8', '1'],
-        pork: ['0.2', '0.4', '0.6', '0.8', '1'],
-        turkey: ['0.2', '0.4', '0.6', '0.8', '1']
+        ribs: ['0.3', '0.5', '0.7', '1.0'],
+        brisket: ['0.5', '0.7', '1.0', '1.5'],
+        pork: ['0.5', '1.0', '1.5', '2.0'],
+        turkey: ['0.3', '0.5', '0.7', '1.0']
     };
 
     const options = weightOptions[productId] || weightOptions.pork;
@@ -395,3 +395,10 @@ app.listen(port, async () => {
     console.log(`🚀 Сервер запущен на порту ${port}`);
     await setWebhook();
 });
+
+//    const weightOptions = {
+//     ribs: ['0.45', '0.9', '1.35', '1.8'],
+//     brisket: ['0.2', '0.4', '0.6', '0.8', '1'],
+//     pork: ['0.2', '0.4', '0.6', '0.8', '1'],
+//     turkey: ['0.2', '0.4', '0.6', '0.8', '1']
+// };
