@@ -6,29 +6,80 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ==================== ХРАНИЛИЩА ====================
 const carts = new Map();              // Корзины пользователей
-const waitingForWeight = new Map();   // Ожидание ввода веса
+const waitingForWeight = new Map();   // Ожидание выбора веса
 const waitingForComment = new Map();  // Ожидание ввода комментария
 
 // ==================== ТОВАРЫ ====================
 const products = {
-    ribs: { name: '🍖 Ребра свиные', price: 2200, unit: 'кг' },
-    brisket: { name: '🥩 Брискет', price: 4500, unit: 'кг' },
-    pork: { name: '🐖 Свинина', price: 2500, unit: 'кг' },
-    turkey: { name: '🦃 Индейка', price: 2000, unit: 'кг' }
+    ribs: { name: '🍖 Ребра свиные', price: 2200, unit: 'кг', maxWeight: 3 },
+    brisket: { name: '🥩 Брискет', price: 4500, unit: 'кг', maxWeight: 3 },
+    pork: { name: '🐖 Свинина', price: 2500, unit: 'кг', maxWeight: 5 },
+    turkey: { name: '🦃 Индейка', price: 2000, unit: 'кг', maxWeight: 3 }
 };
 
-// ID администраторов (замените на свои)
+// ID администраторов
 const ADMIN_IDS = [1323252853, 1069660149];
 
+// ==================== ФУНКЦИИ КЛАВИАТУР ====================
+
+// Клавиатура выбора веса (только кнопки, без ручного ввода)
+function getWeightKeyboard(productId) {
+    const weightOptions = {
+        ribs: ['0.45', '0.9', '1.35', '1.8'],
+        brisket: ['0.2', '0.4', '0.6', '0.8', '1'],
+        pork: ['0.2', '0.4', '0.6', '0.8', '1'],
+        turkey: ['0.2', '0.4', '0.6', '0.8', '1']
+    };
+
+    const options = weightOptions[productId] || weightOptions.pork;
+    const buttons = [[]];
+
+    options.forEach(weight => {
+        const weightNum = parseFloat(weight);
+        const text = weightNum >= 1 ? `${weightNum} кг` : `${weightNum * 1000} г`;
+        buttons[0].push({ text: `🔹 ${text}`, callback_data: `weight_${weight}` });
+    });
+
+    buttons.push([{ text: '❌ Отмена', callback_data: 'weight_cancel' }]);
+
+    return { inline_keyboard: buttons };
+}
+
+// Клавиатура после добавления товара
+function getAfterAddKeyboard() {
+    return {
+        inline_keyboard: [
+            [{ text: '🛒 Перейти в корзину', callback_data: 'view_cart' }],
+            [{ text: '📦 Оформить заказ', callback_data: 'checkout' }]
+        ]
+    };
+}
+
+// Клавиатура корзины
+function getCartKeyboard() {
+    return {
+        inline_keyboard: [
+            [{ text: '📦 Оформить заказ', callback_data: 'checkout' }],
+            [{ text: '🗑 Очистить корзину', callback_data: 'clear_cart' }]
+        ]
+    };
+}
+
+// Клавиатура комментария
+function getCommentKeyboard() {
+    return {
+        inline_keyboard: [
+            [{ text: '📝 Пропустить (без комментария)', callback_data: 'skip_comment' }],
+            [{ text: '❌ Отмена заказа', callback_data: 'cancel_order' }]
+        ]
+    };
+}
+
 // ==================== КОМАНДЫ БОТА ====================
+
 bot.start(async (ctx) => {
-    // Показываем индикатор загрузки
     const msg = await ctx.reply('🔄 Загружаем меню... 🔥');
-
-    // Искусственная задержка (опционально, можно убрать)
     await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Редактируем сообщение
     await ctx.telegram.editMessageText(
         ctx.chat.id,
         msg.message_id,
@@ -76,33 +127,15 @@ async function askForWeight(ctx, productId) {
     const product = products[productId];
     waitingForWeight.set(ctx.from.id, productId);
 
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: '🔹 300 г', callback_data: 'weight_0.3' }, { text: '🔹 500 г', callback_data: 'weight_0.5' }],
-            [{ text: '🔹 700 г', callback_data: 'weight_0.7' }, { text: '🔹 1 кг', callback_data: 'weight_1.0' }],
-            [{ text: '🔹 1.5 кг', callback_data: 'weight_1.5' }, { text: '🔹 2 кг', callback_data: 'weight_2.0' }],
-            [{ text: '✏️ Свой вес (кратно 100 г)', callback_data: 'weight_custom' }],
-            [{ text: '❌ Отмена', callback_data: 'weight_cancel' }]
-        ]
-    };
-
     await ctx.reply(
-        `${product.name}\n💰 Цена: ${product.price}₽/кг\n\n⚖️ Выберите вес (от 300 г до 5 кг, кратно 100 г):`,
-        { reply_markup: keyboard }
+        `${product.name}\n💰 Цена: ${product.price}₽/кг\n\n⚖️ Выберите вес:`,
+        { reply_markup: getWeightKeyboard(productId) }
     );
 }
 
 bot.action(/weight_(\d+\.?\d*)/, async (ctx) => {
     const weight = parseFloat(ctx.match[1]);
     await addToCartWithWeight(ctx, weight);
-});
-
-bot.action('weight_custom', async (ctx) => {
-    await ctx.reply(
-        '📝 Введите вес в килограммах.\n\n' +
-        'Примеры:\n• 0.3 = 300 г\n• 0.7 = 700 г\n• 1.2 = 1 кг 200 г\n\n' +
-        'Вес должен быть от 0.3 до 5 и кратен 100 г (0.1 кг)'
-    );
 });
 
 bot.action('weight_cancel', async (ctx) => {
@@ -149,7 +182,19 @@ async function addToCartWithWeight(ctx, weight, productId = null) {
     carts.set(userId, cart);
     const weightText = weight >= 1 ? `${weight} кг` : `${weight * 1000} г`;
 
-    await ctx.reply(`✅ ${product.name}\n⚖️ Вес: ${weightText}\n💰 Сумма: ${sum}₽\n\nТовар добавлен в корзину!`);
+    // Подсчёт корзины
+    const items = cart.filter(item => item.id && item.name);
+    const totalItems = items.length;
+    const totalSum = items.reduce((acc, item) => acc + (item.totalPrice || 0), 0);
+
+    // Отправляем сообщение с подтверждением и кнопками
+    await ctx.reply(
+        `✅ ${product.name}\n⚖️ Вес: ${weightText}\n💰 Сумма: ${sum}₽\n\n` +
+        `🛒 В корзине: ${totalItems} товаров на ${totalSum}₽\n\n` +
+        `Товар добавлен в корзину!`,
+        { reply_markup: getAfterAddKeyboard() }
+    );
+
     await ctx.answerCbQuery();
 }
 
@@ -158,8 +203,6 @@ async function addToCartWithWeight(ctx, weight, productId = null) {
 async function showCart(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId) || [];
-
-    // Фильтруем только товары
     const items = cart.filter(item => item.id && item.name);
 
     if (items.length === 0) {
@@ -180,20 +223,12 @@ async function showCart(ctx) {
 
     text += `\n💰 ИТОГО: ${total} ₽`;
 
-    // Показываем комментарий, если есть
     if (cart.userComment) {
         text += `\n📝 Комментарий: ${cart.userComment.substring(0, 50)}`;
         if (cart.userComment.length > 50) text += '...';
     }
 
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: '📦 Оформить заказ', callback_data: 'checkout' }],
-            [{ text: '🗑 Очистить корзину', callback_data: 'clear_cart' }]
-        ]
-    };
-
-    await ctx.reply(text, { reply_markup: keyboard });
+    await ctx.reply(text, { reply_markup: getCartKeyboard() });
 }
 
 bot.action('view_cart', (ctx) => showCart(ctx));
@@ -214,7 +249,6 @@ bot.command(/del_(\d+)/, (ctx) => {
     }
 });
 
-// Очистка корзины (кнопка)
 bot.action('clear_cart', (ctx) => {
     carts.delete(ctx.from.id);
     waitingForWeight.delete(ctx.from.id);
@@ -229,19 +263,11 @@ async function askForComment(ctx) {
     const userId = ctx.from.id;
     waitingForComment.set(userId, true);
 
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: '📝 Пропустить (без комментария)', callback_data: 'skip_comment' }],
-            [{ text: '❌ Отмена заказа', callback_data: 'cancel_order' }]
-        ]
-    };
-
     await ctx.reply(
         '📝 Оставьте комментарий к заказу (необязательно)\n\n' +
         'Например: время доставки, особые пожелания, адрес самовывоза и т.д.\n\n' +
-        'Рекомендем оставить номер для связи и указать примерное время доставки для вашего удобства' +
         '💡 Просто напишите текст или нажмите "Пропустить"',
-        { reply_markup: keyboard }
+        { reply_markup: getCommentKeyboard() }
     );
 }
 
@@ -273,7 +299,6 @@ async function finalizeOrder(ctx) {
     const cart = carts.get(userId);
 
     if (!cart) return ctx.reply('🛒 Корзина пуста');
-
     const items = cart.filter(item => item.id && item.name);
     if (items.length === 0) return ctx.reply('🛒 Корзина пуста');
 
@@ -317,8 +342,6 @@ async function finalizeOrder(ctx) {
     );
 }
 
-// ==================== ОФОРМЛЕНИЕ ЗАКАЗА ====================
-
 async function checkout(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId);
@@ -326,80 +349,31 @@ async function checkout(ctx) {
     if (!cart || cart.filter(item => item.id && item.name).length === 0) {
         return ctx.reply('🛒 Корзина пуста. Добавьте товары через /menu');
     }
-
     await askForComment(ctx);
 }
 
 bot.action('checkout', (ctx) => checkout(ctx));
 
-// ==================== ОБРАБОТЧИК ТЕКСТА (должен быть последним!) ====================
+// ==================== ОБРАБОТЧИК ТЕКСТА ====================
 
 bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
     const messageText = ctx.message.text;
 
-    // Пропускаем команды
     if (messageText.startsWith('/')) return;
 
-    // Если пользователь ожидает ввод веса
-    if (waitingForWeight.has(userId)) {
-        const productId = waitingForWeight.get(userId);
-        let weight = parseFloat(messageText.replace(',', '.'));
-
-        if (isNaN(weight)) return ctx.reply('❌ Введите число, например: 0.7');
-        if (weight < 0.3) return ctx.reply('❌ Минимум 300 г (0.3 кг)');
-        if (weight > 5) return ctx.reply('❌ Максимум 5 кг');
-
-        const remainder = weight % 0.1;
-        if (Math.abs(remainder) > 0.001) {
-            return ctx.reply('❌ Вес должен быть кратен 100 г.\nПримеры: 0.3, 0.7, 1.2');
-        }
-
-        weight = Math.round(weight * 10) / 10;
-        waitingForWeight.delete(userId);
-        await addToCartWithWeight(ctx, weight, productId);
-        return;
-    }
-
-    // Если пользователь ожидает ввод комментария
+    // Только комментарий (вес вводить нельзя)
     if (waitingForComment.has(userId)) {
         waitingForComment.delete(userId);
-
         if (!carts.has(userId)) carts.set(userId, []);
         const cart = carts.get(userId);
         cart.userComment = messageText;
         carts.set(userId, cart);
-
         await ctx.reply('✅ Комментарий сохранён!');
         await finalizeOrder(ctx);
         return;
     }
 });
-// ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
-
-const app = express();
-app.use(express.json());
-
-// Ручка для проверки, что бот жив
-app.get('/', (req, res) => {
-    res.send('🔥 Molotov BBQ Bot is running!');
-});
-
-app.get('/webhook', (req, res) => {
-    res.send('Webhook endpoint is ready');
-});
-
-// Ручка для вебхуков Telegram
-app.post('/webhook', async (req, res) => {
-    try {
-        await bot.handleUpdate(req.body);
-        res.send('ok');
-    } catch (error) {
-        console.error('Ошибка обработки вебхука:', error);
-        res.status(500).send('error');
-    }
-});
-
 // Устанавливаем вебхук при запуске
 const setWebhook = async () => {
     const url = process.env.RENDER_EXTERNAL_URL;
