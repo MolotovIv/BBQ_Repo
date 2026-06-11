@@ -25,10 +25,10 @@ const ADMIN_IDS = [1323252853, 1069660149];
 // Клавиатура выбора веса (только кнопки, без ручного ввода)
 function getWeightKeyboard(productId) {
     const weightOptions = {
-        ribs: ['0.3', '0.5', '0.7', '1.0'],
-        brisket: ['0.5', '0.7', '1.0', '1.5'],
-        pork: ['0.5', '1.0', '1.5', '2.0'],
-        turkey: ['0.3', '0.5', '0.7', '1.0']
+        ribs: ['0.45', '0.9', '1.35', '1.8'],
+        brisket: ['0.2', '0.4', '0.6', '0.8', '1'],
+        pork: ['0.2', '0.4', '0.6', '0.8', '1'],
+        turkey: ['0.2', '0.4', '0.6', '0.8', '1']
     };
 
     const options = weightOptions[productId] || weightOptions.pork;
@@ -374,14 +374,37 @@ bot.on('text', async (ctx) => {
         return;
     }
 });
-// Устанавливаем вебхук при запуске
+
+// ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
+
+const app = express(); // 👈 ЭТА СТРОКА БЫЛА ПРОПУЩЕНА
+app.use(express.json());
+
+app.get('/', (req, res) => {
+    res.send('🔥 Molotov BBQ Bot is running!');
+});
+
+app.get('/webhook', (req, res) => {
+    res.send('Webhook endpoint is ready');
+});
+
+app.post('/webhook', async (req, res) => {
+    console.log('📩 Получен вебхук');
+    try {
+        await bot.handleUpdate(req.body);
+        res.send('ok');
+    } catch (error) {
+        console.error('Ошибка обработки вебхука:', error);
+        res.status(500).send('error');
+    }
+});
+
 const setWebhook = async () => {
     const url = process.env.RENDER_EXTERNAL_URL;
     if (!url) {
         console.error('RENDER_EXTERNAL_URL не задан');
         return;
     }
-
     try {
         await bot.telegram.setWebhook(`${url}/webhook`);
         console.log(`✅ Вебхук установлен: ${url}/webhook`);
@@ -396,9 +419,3 @@ app.listen(port, async () => {
     await setWebhook();
 });
 
-//    const weightOptions = {
-//     ribs: ['0.45', '0.9', '1.35', '1.8'],
-//     brisket: ['0.2', '0.4', '0.6', '0.8', '1'],
-//     pork: ['0.2', '0.4', '0.6', '0.8', '1'],
-//     turkey: ['0.2', '0.4', '0.6', '0.8', '1']
-// };
