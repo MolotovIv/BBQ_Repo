@@ -1,92 +1,8 @@
 const { Telegraf } = require('telegraf');
 const express = require('express');
-const Database = require('better-sqlite3');
-const path = require('path');
 require('dotenv').config();
 
-// Импортируем константы и товары из отдельного файла
-const {
-    products,
-    ADMIN_IDS,
-    getMenuKeyboard,
-    getWeightKeyboard,
-    getCartKeyboard,
-    getAddToCartKeyboard,
-    getCommentKeyboard
-} = require('./consts.js');
-
 const bot = new Telegraf(process.env.BOT_TOKEN);
-
-// ==================== БАЗА ДАННЫХ SQLITE ====================
-
-const db = new Database(path.join(__dirname, 'referrals.db'));
-
-// Создаём таблицы
-db.run(`
-    CREATE TABLE IF NOT EXISTS referrals (
-        user_id INTEGER PRIMARY KEY,
-        invited_by INTEGER,
-        created_at INTEGER,
-        order_made INTEGER DEFAULT 0,
-        bonus_given INTEGER DEFAULT 0
-    )
-`);
-
-db.run(`
-    CREATE TABLE IF NOT EXISTS referral_counts (
-        user_id INTEGER PRIMARY KEY,
-        invite_count INTEGER DEFAULT 0,
-        reward_count INTEGER DEFAULT 0
-    )
-`);
-
-// Функции для работы с БД
-function saveReferral(userId, invitedBy) {
-    db.run(
-        `INSERT OR IGNORE INTO referrals (user_id, invited_by, created_at) VALUES (?, ?, ?)`,
-        [userId, invitedBy, Date.now()]
-    );
-    db.run(
-        `INSERT OR IGNORE INTO referral_counts (user_id, invite_count) VALUES (?, 0)`,
-        [invitedBy]
-    );
-    db.run(
-        `UPDATE referral_counts SET invite_count = invite_count + 1 WHERE user_id = ?`,
-        [invitedBy]
-    );
-}
-
-function getReferralInfo(userId, callback) {
-    db.get(`SELECT * FROM referrals WHERE user_id = ?`, [userId], (err, row) => {
-        callback(row || null);
-    });
-}
-
-function getInviteCount(userId, callback) {
-    db.get(`SELECT invite_count, reward_count FROM referral_counts WHERE user_id = ?`, [userId], (err, row) => {
-        callback(row || { invite_count: 0, reward_count: 0 });
-    });
-}
-
-function markOrderMade(userId) {
-    db.run(`UPDATE referrals SET order_made = 1 WHERE user_id = ?`, [userId]);
-}
-
-function markBonusGiven(referredUserId, referrerId) {
-    db.run(`UPDATE referrals SET bonus_given = 1 WHERE user_id = ?`, [referredUserId]);
-    db.run(`UPDATE referral_counts SET reward_count = reward_count + 1 WHERE user_id = ?`, [referrerId]);
-}
-
-function getReferralsStats(callback) {
-    db.all(`
-        SELECT rc.user_id, rc.invite_count, rc.reward_count 
-        FROM referral_counts rc 
-        ORDER BY rc.invite_count DESC 
-        LIMIT 10
-    `, (err, rows) => {
-        callback(rows || []);
-    });
-}
 
 // ==================== ХРАНИЛИЩА ====================
 const carts = new Map();              // Корзины пользователей
@@ -161,7 +77,6 @@ function getCommentKeyboard() {
 
 // ==================== КОМАНДЫ БОТА ====================
 
-
 bot.start(async (ctx) => {
     const msg = await ctx.reply('🔄 Загружаем меню... 🔥');
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -174,60 +89,21 @@ bot.start(async (ctx) => {
         '/menu — посмотреть меню\n' +
         '/cart — моя корзина\n' +
         '/order — оформить заказ\n' +
-        '/clear — очистить корзину\n\n' +
-        '👥 Есть друг? /invite — получи ссылку и получай подарки за каждого друга!'
+        '/clear — очистить корзину'
     );
-});
-
-bot.command('invite', async (ctx) => {
-    const userId = ctx.from.id;
-    const botUsername = ctx.botInfo.username;
-    const inviteLink = `https://t.me/${botUsername}?start=ref_${userId}`;
-
-    getInviteCount(userId, (data) => {
-        let bonusText = '';
-        if (data.reward_count >= 3) {
-            bonusText = `\n\n🏆 СУПЕР! Вы получили ${data.reward_count} подарков! Закажите брискет со скидкой 15% — просто напишите нам!`;
-        } else if (data.reward_count >= 1) {
-            bonusText = `\n\n✅ Вы уже получили ${data.reward_count} ${data.reward_count === 1 ? 'подарок' : 'подарка'}!`;
-        } else {
-            bonusText = `\n\n🎁 За каждого друга, который сделает заказ, вы получите 200 г свинины в подарок!`;
-        }
-
-        ctx.reply(
-            `👥 ВАША РЕФЕРАЛЬНАЯ ССЫЛКА\n\n` +
-            `🔗 ${inviteLink}\n\n` +
-            `📊 Приглашено друзей: ${data.invite_count}\n` +
-            `🎁 Получено подарков: ${data.reward_count}${bonusText}\n\n` +
-            `💡 Просто отправьте ссылку другу. Когда он перейдёт и сделает заказ — вы получите подарок!`
-        );
-    });
-});
-
-bot.command('stats', async (ctx) => {
-    const userId = ctx.from.id;
-    if (!ADMIN_IDS.includes(userId)) {
-        return ctx.reply('❌ Только для администратора');
-    }
-
-    getReferralsStats((stats) => {
-        if (stats.length === 0) {
-            return ctx.reply('📊 Пока нет реферальных переходов');
-        }
-
-        let text = '📊 ТОП ПРИГЛАСИТЕЛЕЙ:\n\n';
-        stats.forEach((stat, index) => {
-            text += `${index + 1}. ID ${stat.user_id}: ${stat.invite_count} приглаш. (${stat.reward_count} подарков)\n`;
-        });
-        text += `\n📦 Всего в системе: ${stats.length} пользователей`;
-
-        ctx.reply(text);
-    });
 });
 
 bot.command('menu', (ctx) => {
     ctx.reply('🔥 Наше меню. Нажимай — выбирай вес и добавляй в корзину:', {
-        reply_markup: getMenuKeyboard()
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '🍖 Ребра свиные — 2200₽/кг', callback_data: 'select_ribs' }],
+                [{ text: '🥩 Брискет — 4500₽/кг', callback_data: 'select_brisket' }],
+                [{ text: '🐖 Свинина — 2500₽/кг', callback_data: 'select_pork' }],
+                [{ text: '🦃 Индейка — 2000₽/кг', callback_data: 'select_turkey' }],
+                [{ text: '🛒 Перейти в корзину', callback_data: 'view_cart' }]
+            ]
+        }
     });
 });
 
@@ -353,11 +229,11 @@ async function showCart(ctx) {
     }
 
     await ctx.reply(text, { reply_markup: getCartKeyboard() });
-    await ctx.reply(text, { reply_markup: getCartKeyboard() });
 }
 
 bot.action('view_cart', (ctx) => showCart(ctx));
 
+// Удаление товара
 bot.command(/del_(\d+)/, (ctx) => {
     const userId = ctx.from.id;
     const index = parseInt(ctx.match[1]);
@@ -392,7 +268,6 @@ async function askForComment(ctx) {
         'Например: время доставки, особые пожелания, адрес самовывоза и т.д.\n\n' +
         '💡 Просто напишите текст или нажмите "Пропустить"',
         { reply_markup: getCommentKeyboard() }
-        { reply_markup: getCommentKeyboard() }
     );
 }
 
@@ -418,8 +293,6 @@ bot.action('cancel_order', async (ctx) => {
     await ctx.reply('❌ Оформление заказа отменено');
     await showCart(ctx);
 });
-
-// ==================== ФИНАЛЬНОЕ ОФОРМЛЕНИЕ ЗАКАЗА ====================
 
 async function finalizeOrder(ctx) {
     const userId = ctx.from.id;
@@ -451,33 +324,13 @@ async function finalizeOrder(ctx) {
         orderText += `\n\n📝 Комментарий: не указан`;
     }
 
-    getReferralInfo(userId, (referralInfo) => {
-        if (referralInfo && referralInfo.invited_by && !referralInfo.bonus_given) {
-            const referrerId = referralInfo.invited_by;
-
-            markBonusGiven(userId, referrerId);
-
-            orderText += `\n\n🎁 РЕФЕРАЛ: пришёл по ссылке от ${referrerId}`;
-
-            try {
-                bot.telegram.sendMessage(referrerId,
-                    `🎁 ПОЗДРАВЛЯЕМ!\n\n` +
-                    `Ваш друг ${ctx.from.first_name} сделал первый заказ!\n\n` +
-                    `Вы получаете 200 г свинины в подарок к следующему заказу!\n` +
-                    `Просто напишите нам "БОНУС" при оформлении.`
-                );
-            } catch (e) { }
+    for (const adminId of ADMIN_IDS) {
+        try {
+            await bot.telegram.sendMessage(adminId, orderText);
+        } catch (error) {
+            console.error(`Ошибка отправки админу ${adminId}:`, error);
         }
-        markOrderMade(userId);
-
-        for (const adminId of ADMIN_IDS) {
-            try {
-                bot.telegram.sendMessage(adminId, orderText);
-            } catch (error) {
-                console.error(`Ошибка отправки админу ${adminId}:`, error);
-            }
-        }
-    });
+    }
 
     carts.delete(userId);
     waitingForComment.delete(userId);
@@ -501,7 +354,6 @@ async function checkout(ctx) {
 
 bot.action('checkout', (ctx) => checkout(ctx));
 
-// ==================== ОБРАБОТЧИК ТЕКСТА ====================
 // ==================== ОБРАБОТЧИК ТЕКСТА ====================
 
 bot.on('text', async (ctx) => {
