@@ -101,9 +101,9 @@ bot.command('menu', (ctx) => {
     ctx.reply('🔥 Наше меню. Нажимай — выбирай вес и добавляй в корзину:', {
         reply_markup: {
             inline_keyboard: [
-                [{ text: '🍖 Ребра свиные — 2200₽/кг', callback_data: 'select_ribs' }],
+                [{ text: '🍖 Ребра свиные — 2000₽/кг', callback_data: 'select_ribs' }],
                 [{ text: '🥩 Брискет — 4500₽/кг', callback_data: 'select_brisket' }],
-                [{ text: '🐖 Свинина — 2500₽/кг', callback_data: 'select_pork' }],
+                [{ text: '🐖 Свинина — 2200₽/кг', callback_data: 'select_pork' }],
                 [{ text: '🦃 Индейка — 2000₽/кг', callback_data: 'select_turkey' }],
                 [{ text: '🛒 Перейти в корзину', callback_data: 'view_cart' }]
             ]
