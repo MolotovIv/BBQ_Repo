@@ -5,21 +5,23 @@ require('dotenv').config();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ==================== ХРАНИЛИЩА ====================
-const carts = new Map();
-const waitingForWeight = new Map();
-const waitingForComment = new Map();
+const carts = new Map();              // Корзины пользователей
+const waitingForWeight = new Map();   // Ожидание выбора веса
+const waitingForComment = new Map();  // Ожидание ввода комментария
 
-// ===== ДЛЯ ДВУСТОРОННЕГО ЧАТА =====
-// Связь: message_id уведомления админа → clientId
-const orderNotifications = new Map();
-// Связь: clientId → Set(adminId) для пересылки сообщений клиента
-const activeChats = new Map();
+// Для двустороннего чата
+const orderNotifications = new Map(); // message_id уведомления админа → clientId
+const activeChats = new Map();        // clientId → Set(adminId)
+const lastClient = new Map();         // adminId → clientId (для быстрых ответов)
+
+// Счётчик заказов (при перезапуске сбрасывается — для продакшена нужна БД)
+let orderCounter = 1;
 
 // ==================== ТОВАРЫ ====================
 const products = {
     ribs: { name: '🍖 Ребра свиные', price: 2000, unit: 'кг', maxWeight: 3 },
     brisket: { name: '🥩 Брискет', price: 4500, unit: 'кг', maxWeight: 3 },
-    pork: { name: '🐖 Свинина', price: 2300, unit: 'кг', maxWeight: 5 },
+    pork: { name: '🐖 Свинина', price: 2200, unit: 'кг', maxWeight: 5 },
     turkey: { name: '🦃 Индейка', price: 2000, unit: 'кг', maxWeight: 3 }
 };
 
@@ -27,6 +29,7 @@ const products = {
 const ADMIN_IDS = [1323252853, 1069660149];
 
 // ==================== ФУНКЦИИ КЛАВИАТУР ====================
+
 function getWeightKeyboard(productId) {
     const weightOptions = {
         ribs: ['0.45', '0.9', '1.35', '1.8'],
@@ -73,6 +76,7 @@ function getCommentKeyboard() {
 }
 
 // ==================== КОМАНДЫ БОТА ====================
+
 bot.start(async (ctx) => {
     const msg = await ctx.reply('🔄 Загружаем меню... 🔥');
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -95,7 +99,7 @@ bot.command('menu', (ctx) => {
             inline_keyboard: [
                 [{ text: '🍖 Ребра свиные — 2000₽/кг', callback_data: 'select_ribs' }],
                 [{ text: '🥩 Брискет — 4500₽/кг', callback_data: 'select_brisket' }],
-                [{ text: '🐖 Свинина — 2300₽/кг', callback_data: 'select_pork' }],
+                [{ text: '🐖 Свинина — 2200₽/кг', callback_data: 'select_pork' }],
                 [{ text: '🦃 Индейка — 2000₽/кг', callback_data: 'select_turkey' }],
                 [{ text: '🛒 Перейти в корзину', callback_data: 'view_cart' }]
             ]
@@ -113,6 +117,7 @@ bot.command('clear', (ctx) => {
 });
 
 // ==================== ВЫБОР ТОВАРА И ВЕСА ====================
+
 bot.action('select_ribs', (ctx) => askForWeight(ctx, 'ribs'));
 bot.action('select_brisket', (ctx) => askForWeight(ctx, 'brisket'));
 bot.action('select_pork', (ctx) => askForWeight(ctx, 'pork'));
@@ -139,6 +144,7 @@ bot.action('weight_cancel', async (ctx) => {
 });
 
 // ==================== ДОБАВЛЕНИЕ В КОРЗИНУ ====================
+
 async function addToCartWithWeight(ctx, weight, productId = null) {
     let userId = ctx.from.id;
     let actualProductId = productId;
@@ -181,6 +187,7 @@ async function addToCartWithWeight(ctx, weight, productId = null) {
 }
 
 // ==================== КОРЗИНА ====================
+
 async function showCart(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId) || [];
@@ -231,6 +238,7 @@ bot.action('clear_cart', (ctx) => {
 });
 
 // ==================== КОММЕНТАРИЙ К ЗАКАЗУ ====================
+
 async function askForComment(ctx) {
     const userId = ctx.from.id;
     waitingForComment.set(userId, true);
@@ -262,7 +270,8 @@ bot.action('cancel_order', async (ctx) => {
     await showCart(ctx);
 });
 
-// ==================== ОФОРМЛЕНИЕ ЗАКАЗА С ДВУСТОРОННИМ ЧАТОМ ====================
+// ==================== ОФОРМЛЕНИЕ ЗАКАЗА (С ДВУСТОРОННИМ ЧАТОМ) ====================
+
 async function finalizeOrder(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId);
@@ -270,8 +279,10 @@ async function finalizeOrder(ctx) {
     const items = cart.filter(item => item.id && item.name);
     if (items.length === 0) return ctx.reply('🛒 Корзина пуста');
 
+    // Номер заказа
+    const orderNumber = orderCounter++;
     let total = 0;
-    let orderText = '📦 НОВЫЙ ЗАКАЗ\n\n';
+    let orderText = `📦 ЗАКАЗ #${orderNumber}\n\n`;
     items.forEach(item => {
         const weightText = item.weight >= 1 ? `${item.weight} кг` : `${item.weight * 1000} г`;
         total += item.totalPrice;
@@ -289,14 +300,16 @@ async function finalizeOrder(ctx) {
         orderText += `\n\n📝 Комментарий: не указан`;
     }
 
-    // ==== ОТПРАВКА АДМИНАМ И СОХРАНЕНИЕ ДЛЯ ДВУСТОРОННЕГО ЧАТА ====
+    // Сохраняем клиента в активные чаты
     const adminSet = new Set(ADMIN_IDS);
-    activeChats.set(userId, adminSet); // запоминаем, что клиент в активном диалоге
+    activeChats.set(userId, adminSet);
 
+    // Отправляем уведомления админам и сохраняем связь
     for (const adminId of ADMIN_IDS) {
         try {
             const sentMsg = await bot.telegram.sendMessage(adminId, orderText);
             orderNotifications.set(sentMsg.message_id, userId);
+            lastClient.set(adminId, userId); // для быстрых ответов
         } catch (error) {
             console.error(`Ошибка отправки админу ${adminId}:`, error);
         }
@@ -306,7 +319,7 @@ async function finalizeOrder(ctx) {
     waitingForComment.delete(userId);
 
     await ctx.reply(
-        '✅ ЗАКАЗ ОТПРАВЛЕН!\n\n' +
+        `✅ ЗАКАЗ #${orderNumber} ОТПРАВЛЕН!\n\n` +
         'Мы свяжемся с вами для подтверждения.\n\n' +
         'Спасибо, что выбрали Molotov BBQ! 🔥'
     );
@@ -323,14 +336,81 @@ async function checkout(ctx) {
 
 bot.action('checkout', (ctx) => checkout(ctx));
 
-// ==================== ОБРАБОТЧИК ТЕКСТА (ДВУСТОРОННИЙ ЧАТ) ====================
+// ==================== ОБРАБОТЧИК ТЕКСТА (ДВУСТОРОННИЙ ЧАТ И КОМАНДЫ) ====================
+
 bot.on('text', async (ctx) => {
     const chatId = ctx.chat.id;
     const message = ctx.message;
     const userId = ctx.from.id;
     const messageText = ctx.message.text;
 
-    // ==== 1. Если админ отвечает на уведомление (пересылаем клиенту) ====
+    // === 1. АДМИНСКИЕ КОМАНДЫ ===
+
+    // /send ID_или_@username Текст
+    if (ADMIN_IDS.includes(chatId) && messageText.startsWith('/send ')) {
+        const parts = messageText.split(' ');
+        if (parts.length < 3) {
+            return ctx.reply('❌ Формат: /send ID_или_@username Текст сообщения');
+        }
+        const target = parts[1];
+        const replyText = parts.slice(2).join(' ');
+        let clientId = null;
+        if (/^\d+$/.test(target)) {
+            clientId = parseInt(target);
+        } else {
+            const username = target.startsWith('@') ? target.slice(1) : target;
+            try {
+                const chat = await bot.telegram.getChat(`@${username}`);
+                clientId = chat.id;
+            } catch (e) {
+                return ctx.reply('❌ Пользователь с таким username не найден или не начал диалог с ботом.');
+            }
+        }
+        if (!clientId) {
+            return ctx.reply('❌ Не удалось определить ID.');
+        }
+        try {
+            await bot.telegram.sendMessage(clientId, replyText);
+            await ctx.reply(`✅ Сообщение отправлено клиенту (${clientId})`);
+        } catch (error) {
+            await ctx.reply('❌ Ошибка отправки. Клиент, вероятно, не активировал бота.');
+        }
+        return;
+    }
+
+    // /clients — список активных клиентов
+    if (ADMIN_IDS.includes(chatId) && messageText === '/clients') {
+        if (activeChats.size === 0) {
+            return ctx.reply('📭 Нет активных клиентов.');
+        }
+        let text = '👥 АКТИВНЫЕ КЛИЕНТЫ:\n\n';
+        let index = 1;
+        for (const [clientId] of activeChats) {
+            text += `${index}. ID: ${clientId} — /send ${clientId} Текст...\n`;
+            index++;
+        }
+        await ctx.reply(text);
+        return;
+    }
+
+    // /confirm — отправить подтверждение последнему клиенту
+    if (ADMIN_IDS.includes(chatId) && messageText === '/confirm') {
+        const lastClientId = lastClient.get(chatId);
+        if (lastClientId) {
+            const replyText = '✅ Ваш заказ принят! Мы свяжемся с вами для подтверждения.';
+            try {
+                await bot.telegram.sendMessage(lastClientId, replyText);
+                await ctx.reply(`✅ Подтверждение отправлено клиенту (${lastClientId})`);
+            } catch (error) {
+                await ctx.reply('❌ Ошибка отправки.');
+            }
+        } else {
+            await ctx.reply('❌ Нет активного клиента для подтверждения.');
+        }
+        return;
+    }
+
+    // === 2. Если админ отвечает на уведомление (пересылаем клиенту) ===
     if (ADMIN_IDS.includes(chatId) && message.reply_to_message) {
         const repliedMsgId = message.reply_to_message.message_id;
         if (orderNotifications.has(repliedMsgId)) {
@@ -347,7 +427,7 @@ bot.on('text', async (ctx) => {
         }
     }
 
-    // ==== 2. Если клиент (не админ) пишет в бот — пересылаем всем админам ====
+    // === 3. Если клиент (не админ) пишет в бот — пересылаем всем админам ===
     if (!ADMIN_IDS.includes(chatId) && activeChats.has(userId)) {
         const admins = activeChats.get(userId);
         const userName = ctx.from.first_name || 'Клиент';
@@ -360,12 +440,11 @@ bot.on('text', async (ctx) => {
                 console.error(`Ошибка пересылки сообщения админу ${adminId}:`, error);
             }
         }
-        // Подтверждаем клиенту, что сообщение доставлено
         await ctx.reply('✅ Ваше сообщение отправлено менеджеру. Мы ответим в ближайшее время.');
         return;
     }
 
-    // ==== 3. Остальная логика (комментарии, команды) ====
+    // === 4. Обычная логика для клиентов (комментарии, команды) ===
     if (messageText.startsWith('/')) return;
 
     if (waitingForComment.has(userId)) {
@@ -381,6 +460,7 @@ bot.on('text', async (ctx) => {
 });
 
 // ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
+
 const app = express();
 app.use(express.json());
 
