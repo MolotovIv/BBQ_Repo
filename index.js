@@ -5,19 +5,21 @@ require('dotenv').config();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // ==================== ХРАНИЛИЩА ====================
-const carts = new Map();              // Корзины пользователей
-const waitingForWeight = new Map();   // Ожидание выбора веса
-const waitingForComment = new Map();  // Ожидание ввода комментария
+const carts = new Map();
+const waitingForWeight = new Map();
+const waitingForComment = new Map();
 
-// ==================== ДОБАВЛЕНО: ДЛЯ ПЕРЕСЫЛКИ ОТВЕТОВ ====================
-// Хранит связь: message_id уведомления, отправленного админу → chat_id клиента
+// ===== ДЛЯ ДВУСТОРОННЕГО ЧАТА =====
+// Связь: message_id уведомления админа → clientId
 const orderNotifications = new Map();
+// Связь: clientId → Set(adminId) для пересылки сообщений клиента
+const activeChats = new Map();
 
 // ==================== ТОВАРЫ ====================
 const products = {
     ribs: { name: '🍖 Ребра свиные', price: 2000, unit: 'кг', maxWeight: 3 },
     brisket: { name: '🥩 Брискет', price: 4500, unit: 'кг', maxWeight: 3 },
-    pork: { name: '🐖 Свинина', price: 2200, unit: 'кг', maxWeight: 5 },
+    pork: { name: '🐖 Свинина', price: 2300, unit: 'кг', maxWeight: 5 },
     turkey: { name: '🦃 Индейка', price: 2000, unit: 'кг', maxWeight: 3 }
 };
 
@@ -25,8 +27,6 @@ const products = {
 const ADMIN_IDS = [1323252853, 1069660149];
 
 // ==================== ФУНКЦИИ КЛАВИАТУР ====================
-
-// Клавиатура выбора веса (только кнопки, без ручного ввода)
 function getWeightKeyboard(productId) {
     const weightOptions = {
         ribs: ['0.45', '0.9', '1.35', '1.8'],
@@ -34,22 +34,17 @@ function getWeightKeyboard(productId) {
         pork: ['0.2', '0.4', '0.6', '0.8', '1'],
         turkey: ['0.2', '0.4', '0.6', '0.8', '1']
     };
-
     const options = weightOptions[productId] || weightOptions.pork;
     const buttons = [[]];
-
     options.forEach(weight => {
         const weightNum = parseFloat(weight);
         const text = weightNum >= 1 ? `${weightNum} кг` : `${weightNum * 1000} г`;
         buttons[0].push({ text: `🔹 ${text}`, callback_data: `weight_${weight}` });
     });
-
     buttons.push([{ text: '❌ Отмена', callback_data: 'weight_cancel' }]);
-
     return { inline_keyboard: buttons };
 }
 
-// Клавиатура после добавления товара
 function getAfterAddKeyboard() {
     return {
         inline_keyboard: [
@@ -59,7 +54,6 @@ function getAfterAddKeyboard() {
     };
 }
 
-// Клавиатура корзины
 function getCartKeyboard() {
     return {
         inline_keyboard: [
@@ -69,7 +63,6 @@ function getCartKeyboard() {
     };
 }
 
-// Клавиатура комментария
 function getCommentKeyboard() {
     return {
         inline_keyboard: [
@@ -80,7 +73,6 @@ function getCommentKeyboard() {
 }
 
 // ==================== КОМАНДЫ БОТА ====================
-
 bot.start(async (ctx) => {
     const msg = await ctx.reply('🔄 Загружаем меню... 🔥');
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -103,7 +95,7 @@ bot.command('menu', (ctx) => {
             inline_keyboard: [
                 [{ text: '🍖 Ребра свиные — 2000₽/кг', callback_data: 'select_ribs' }],
                 [{ text: '🥩 Брискет — 4500₽/кг', callback_data: 'select_brisket' }],
-                [{ text: '🐖 Свинина — 2200₽/кг', callback_data: 'select_pork' }],
+                [{ text: '🐖 Свинина — 2300₽/кг', callback_data: 'select_pork' }],
                 [{ text: '🦃 Индейка — 2000₽/кг', callback_data: 'select_turkey' }],
                 [{ text: '🛒 Перейти в корзину', callback_data: 'view_cart' }]
             ]
@@ -121,7 +113,6 @@ bot.command('clear', (ctx) => {
 });
 
 // ==================== ВЫБОР ТОВАРА И ВЕСА ====================
-
 bot.action('select_ribs', (ctx) => askForWeight(ctx, 'ribs'));
 bot.action('select_brisket', (ctx) => askForWeight(ctx, 'brisket'));
 bot.action('select_pork', (ctx) => askForWeight(ctx, 'pork'));
@@ -130,7 +121,6 @@ bot.action('select_turkey', (ctx) => askForWeight(ctx, 'turkey'));
 async function askForWeight(ctx, productId) {
     const product = products[productId];
     waitingForWeight.set(ctx.from.id, productId);
-
     await ctx.reply(
         `${product.name}\n💰 Цена: ${product.price}₽/кг\n\n⚖️ Выберите вес:`,
         { reply_markup: getWeightKeyboard(productId) }
@@ -149,27 +139,21 @@ bot.action('weight_cancel', async (ctx) => {
 });
 
 // ==================== ДОБАВЛЕНИЕ В КОРЗИНУ ====================
-
 async function addToCartWithWeight(ctx, weight, productId = null) {
     let userId = ctx.from.id;
     let actualProductId = productId;
-
     if (!actualProductId && waitingForWeight.has(userId)) {
         actualProductId = waitingForWeight.get(userId);
         waitingForWeight.delete(userId);
     }
-
     if (!actualProductId) {
         return ctx.reply('❌ Ошибка. Попробуйте добавить товар заново через /menu');
     }
-
     const product = products[actualProductId];
     const sum = product.price * weight;
-
     if (!carts.has(userId)) carts.set(userId, []);
     const cart = carts.get(userId);
     const existing = cart.find(item => item.id === actualProductId);
-
     if (existing) {
         existing.weight += weight;
         existing.totalPrice = existing.price * existing.weight;
@@ -182,38 +166,30 @@ async function addToCartWithWeight(ctx, weight, productId = null) {
             totalPrice: sum
         });
     }
-
     carts.set(userId, cart);
     const weightText = weight >= 1 ? `${weight} кг` : `${weight * 1000} г`;
-
     const items = cart.filter(item => item.id && item.name);
     const totalItems = items.length;
     const totalSum = items.reduce((acc, item) => acc + (item.totalPrice || 0), 0);
-
     await ctx.reply(
         `✅ ${product.name}\n⚖️ Вес: ${weightText}\n💰 Сумма: ${sum}₽\n\n` +
         `🛒 В корзине: ${totalItems} товаров на ${totalSum}₽\n\n` +
         `Товар добавлен в корзину!`,
         { reply_markup: getAfterAddKeyboard() }
     );
-
     await ctx.answerCbQuery();
 }
 
 // ==================== КОРЗИНА ====================
-
 async function showCart(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId) || [];
     const items = cart.filter(item => item.id && item.name);
-
     if (items.length === 0) {
         return ctx.reply('🛒 Корзина пуста. Добавьте что-нибудь через /menu');
     }
-
     let total = 0;
     let text = '🛒 ВАША КОРЗИНА:\n\n';
-
     items.forEach((item, index) => {
         const weightText = item.weight >= 1 ? `${item.weight} кг` : `${item.weight * 1000} г`;
         total += item.totalPrice;
@@ -222,25 +198,20 @@ async function showCart(ctx) {
         text += `   💰 ${item.price}₽/кг = ${item.totalPrice}₽\n`;
         text += `   🗑️ /del_${index}\n\n`;
     });
-
     text += `\n💰 ИТОГО: ${total} ₽`;
-
     if (cart.userComment) {
         text += `\n📝 Комментарий: ${cart.userComment.substring(0, 50)}`;
         if (cart.userComment.length > 50) text += '...';
     }
-
     await ctx.reply(text, { reply_markup: getCartKeyboard() });
 }
 
 bot.action('view_cart', (ctx) => showCart(ctx));
 
-// Удаление товара
 bot.command(/del_(\d+)/, (ctx) => {
     const userId = ctx.from.id;
     const index = parseInt(ctx.match[1]);
     const cart = carts.get(userId);
-
     if (cart && cart[index]) {
         cart.splice(index, 1);
         carts.set(userId, cart);
@@ -260,11 +231,9 @@ bot.action('clear_cart', (ctx) => {
 });
 
 // ==================== КОММЕНТАРИЙ К ЗАКАЗУ ====================
-
 async function askForComment(ctx) {
     const userId = ctx.from.id;
     waitingForComment.set(userId, true);
-
     await ctx.reply(
         '📝 Оставьте комментарий к заказу (необязательно)\n\n' +
         'Например: время доставки, особые пожелания, адрес самовывоза и т.д.\n\n' +
@@ -276,12 +245,10 @@ async function askForComment(ctx) {
 bot.action('skip_comment', async (ctx) => {
     const userId = ctx.from.id;
     waitingForComment.delete(userId);
-
     if (!carts.has(userId)) carts.set(userId, []);
     const cart = carts.get(userId);
     cart.userComment = '';
     carts.set(userId, cart);
-
     await ctx.answerCbQuery();
     await ctx.reply('⏩ Комментарий пропущен');
     await finalizeOrder(ctx);
@@ -290,25 +257,21 @@ bot.action('skip_comment', async (ctx) => {
 bot.action('cancel_order', async (ctx) => {
     const userId = ctx.from.id;
     waitingForComment.delete(userId);
-
     await ctx.answerCbQuery('Заказ отменён');
     await ctx.reply('❌ Оформление заказа отменено');
     await showCart(ctx);
 });
 
-// ==================== ОФОРМЛЕНИЕ ЗАКАЗА (С ПЕРЕСЫЛКОЙ ОТВЕТОВ) ====================
-
+// ==================== ОФОРМЛЕНИЕ ЗАКАЗА С ДВУСТОРОННИМ ЧАТОМ ====================
 async function finalizeOrder(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId);
-
     if (!cart) return ctx.reply('🛒 Корзина пуста');
     const items = cart.filter(item => item.id && item.name);
     if (items.length === 0) return ctx.reply('🛒 Корзина пуста');
 
     let total = 0;
     let orderText = '📦 НОВЫЙ ЗАКАЗ\n\n';
-
     items.forEach(item => {
         const weightText = item.weight >= 1 ? `${item.weight} кг` : `${item.weight * 1000} г`;
         total += item.totalPrice;
@@ -316,23 +279,23 @@ async function finalizeOrder(ctx) {
         orderText += `   ⚖️ Вес: ${weightText}\n`;
         orderText += `   💰 ${item.price}₽/кг = ${item.totalPrice}₽\n\n`;
     });
-
     orderText += `💰 Итого: ${total} ₽\n`;
     orderText += `👤 Клиент: ${ctx.from.first_name}\n`;
     orderText += `🆔 ID: ${userId}\n`;
     orderText += `📛 Username: @${ctx.from.username || 'нет username'}`;
-
     if (cart.userComment && cart.userComment.trim()) {
         orderText += `\n\n📝 Комментарий:\n${cart.userComment}`;
     } else {
         orderText += `\n\n📝 Комментарий: не указан`;
     }
 
-    // ===== ОТПРАВКА АДМИНАМ С СОХРАНЕНИЕМ СООТВЕТСТВИЯ ДЛЯ ОТВЕТОВ =====
+    // ==== ОТПРАВКА АДМИНАМ И СОХРАНЕНИЕ ДЛЯ ДВУСТОРОННЕГО ЧАТА ====
+    const adminSet = new Set(ADMIN_IDS);
+    activeChats.set(userId, adminSet); // запоминаем, что клиент в активном диалоге
+
     for (const adminId of ADMIN_IDS) {
         try {
             const sentMsg = await bot.telegram.sendMessage(adminId, orderText);
-            // Сохраняем связь: ID уведомления → ID клиента
             orderNotifications.set(sentMsg.message_id, userId);
         } catch (error) {
             console.error(`Ошибка отправки админу ${adminId}:`, error);
@@ -352,7 +315,6 @@ async function finalizeOrder(ctx) {
 async function checkout(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId);
-
     if (!cart || cart.filter(item => item.id && item.name).length === 0) {
         return ctx.reply('🛒 Корзина пуста. Добавьте товары через /menu');
     }
@@ -361,15 +323,14 @@ async function checkout(ctx) {
 
 bot.action('checkout', (ctx) => checkout(ctx));
 
-// ==================== ОБРАБОТЧИК ТЕКСТА (С ПЕРЕСЫЛКОЙ ОТВЕТОВ) ====================
-
+// ==================== ОБРАБОТЧИК ТЕКСТА (ДВУСТОРОННИЙ ЧАТ) ====================
 bot.on('text', async (ctx) => {
     const chatId = ctx.chat.id;
     const message = ctx.message;
     const userId = ctx.from.id;
     const messageText = ctx.message.text;
 
-    // ===== НОВАЯ ЛОГИКА: пересылка ответов админа клиенту =====
+    // ==== 1. Если админ отвечает на уведомление (пересылаем клиенту) ====
     if (ADMIN_IDS.includes(chatId) && message.reply_to_message) {
         const repliedMsgId = message.reply_to_message.message_id;
         if (orderNotifications.has(repliedMsgId)) {
@@ -382,11 +343,29 @@ bot.on('text', async (ctx) => {
                 console.error('Ошибка отправки ответа клиенту:', error);
                 await ctx.reply('❌ Не удалось отправить ответ клиенту. Возможно, клиент не активировал бота.');
             }
-            return; // завершаем, чтобы не обрабатывать как комментарий
+            return;
         }
     }
 
-    // ОСТАЛЬНАЯ ЛОГИКА (комментарий)
+    // ==== 2. Если клиент (не админ) пишет в бот — пересылаем всем админам ====
+    if (!ADMIN_IDS.includes(chatId) && activeChats.has(userId)) {
+        const admins = activeChats.get(userId);
+        const userName = ctx.from.first_name || 'Клиент';
+        const userLink = ctx.from.username ? `@${ctx.from.username}` : `ID: ${userId}`;
+        const forwardedText = `💬 Сообщение от ${userName} (${userLink}):\n\n${messageText}`;
+        for (const adminId of admins) {
+            try {
+                await bot.telegram.sendMessage(adminId, forwardedText);
+            } catch (error) {
+                console.error(`Ошибка пересылки сообщения админу ${adminId}:`, error);
+            }
+        }
+        // Подтверждаем клиенту, что сообщение доставлено
+        await ctx.reply('✅ Ваше сообщение отправлено менеджеру. Мы ответим в ближайшее время.');
+        return;
+    }
+
+    // ==== 3. Остальная логика (комментарии, команды) ====
     if (messageText.startsWith('/')) return;
 
     if (waitingForComment.has(userId)) {
@@ -402,7 +381,6 @@ bot.on('text', async (ctx) => {
 });
 
 // ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
-
 const app = express();
 app.use(express.json());
 
