@@ -9,11 +9,15 @@ const carts = new Map();              // Корзины пользователе
 const waitingForWeight = new Map();   // Ожидание выбора веса
 const waitingForComment = new Map();  // Ожидание ввода комментария
 
+// ==================== ДОБАВЛЕНО: ДЛЯ ПЕРЕСЫЛКИ ОТВЕТОВ ====================
+// Хранит связь: message_id уведомления, отправленного админу → chat_id клиента
+const orderNotifications = new Map();
+
 // ==================== ТОВАРЫ ====================
 const products = {
-    ribs: { name: '🍖 Ребра свиные', price: 2200, unit: 'кг', maxWeight: 3 },
+    ribs: { name: '🍖 Ребра свиные', price: 2000, unit: 'кг', maxWeight: 3 },
     brisket: { name: '🥩 Брискет', price: 4500, unit: 'кг', maxWeight: 3 },
-    pork: { name: '🐖 Свинина', price: 2500, unit: 'кг', maxWeight: 5 },
+    pork: { name: '🐖 Свинина', price: 2200, unit: 'кг', maxWeight: 5 },
     turkey: { name: '🦃 Индейка', price: 2000, unit: 'кг', maxWeight: 3 }
 };
 
@@ -182,12 +186,10 @@ async function addToCartWithWeight(ctx, weight, productId = null) {
     carts.set(userId, cart);
     const weightText = weight >= 1 ? `${weight} кг` : `${weight * 1000} г`;
 
-    // Подсчёт корзины
     const items = cart.filter(item => item.id && item.name);
     const totalItems = items.length;
     const totalSum = items.reduce((acc, item) => acc + (item.totalPrice || 0), 0);
 
-    // Отправляем сообщение с подтверждением и кнопками
     await ctx.reply(
         `✅ ${product.name}\n⚖️ Вес: ${weightText}\n💰 Сумма: ${sum}₽\n\n` +
         `🛒 В корзине: ${totalItems} товаров на ${totalSum}₽\n\n` +
@@ -294,6 +296,8 @@ bot.action('cancel_order', async (ctx) => {
     await showCart(ctx);
 });
 
+// ==================== ОФОРМЛЕНИЕ ЗАКАЗА (С ПЕРЕСЫЛКОЙ ОТВЕТОВ) ====================
+
 async function finalizeOrder(ctx) {
     const userId = ctx.from.id;
     const cart = carts.get(userId);
@@ -324,9 +328,12 @@ async function finalizeOrder(ctx) {
         orderText += `\n\n📝 Комментарий: не указан`;
     }
 
+    // ===== ОТПРАВКА АДМИНАМ С СОХРАНЕНИЕМ СООТВЕТСТВИЯ ДЛЯ ОТВЕТОВ =====
     for (const adminId of ADMIN_IDS) {
         try {
-            await bot.telegram.sendMessage(adminId, orderText);
+            const sentMsg = await bot.telegram.sendMessage(adminId, orderText);
+            // Сохраняем связь: ID уведомления → ID клиента
+            orderNotifications.set(sentMsg.message_id, userId);
         } catch (error) {
             console.error(`Ошибка отправки админу ${adminId}:`, error);
         }
@@ -354,15 +361,34 @@ async function checkout(ctx) {
 
 bot.action('checkout', (ctx) => checkout(ctx));
 
-// ==================== ОБРАБОТЧИК ТЕКСТА ====================
+// ==================== ОБРАБОТЧИК ТЕКСТА (С ПЕРЕСЫЛКОЙ ОТВЕТОВ) ====================
 
 bot.on('text', async (ctx) => {
+    const chatId = ctx.chat.id;
+    const message = ctx.message;
     const userId = ctx.from.id;
     const messageText = ctx.message.text;
 
+    // ===== НОВАЯ ЛОГИКА: пересылка ответов админа клиенту =====
+    if (ADMIN_IDS.includes(chatId) && message.reply_to_message) {
+        const repliedMsgId = message.reply_to_message.message_id;
+        if (orderNotifications.has(repliedMsgId)) {
+            const clientChatId = orderNotifications.get(repliedMsgId);
+            try {
+                await bot.telegram.sendMessage(clientChatId, messageText);
+                orderNotifications.delete(repliedMsgId); // очищаем, чтобы не отправлять повторно
+                await ctx.reply('✅ Ответ отправлен клиенту.');
+            } catch (error) {
+                console.error('Ошибка отправки ответа клиенту:', error);
+                await ctx.reply('❌ Не удалось отправить ответ клиенту. Возможно, клиент не активировал бота.');
+            }
+            return; // завершаем, чтобы не обрабатывать как комментарий
+        }
+    }
+
+    // ОСТАЛЬНАЯ ЛОГИКА (комментарий)
     if (messageText.startsWith('/')) return;
 
-    // Только комментарий (вес вводить нельзя)
     if (waitingForComment.has(userId)) {
         waitingForComment.delete(userId);
         if (!carts.has(userId)) carts.set(userId, []);
@@ -377,7 +403,7 @@ bot.on('text', async (ctx) => {
 
 // ==================== ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
 
-const app = express(); // 👈 ЭТА СТРОКА БЫЛА ПРОПУЩЕНА
+const app = express();
 app.use(express.json());
 
 app.get('/', (req, res) => {
@@ -418,4 +444,3 @@ app.listen(port, async () => {
     console.log(`🚀 Сервер запущен на порту ${port}`);
     await setWebhook();
 });
-
