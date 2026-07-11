@@ -1,6 +1,8 @@
 const { Telegraf } = require('telegraf');
 const express = require('express');
 require('dotenv').config();
+const fs = require('fs');
+const logStream = fs.createWriteStream('chat.log', { flags: 'a' });
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -29,6 +31,14 @@ const products = {
 const ADMIN_IDS = [1323252853, 1069660149];
 
 // ==================== ФУНКЦИИ КЛАВИАТУР ====================
+
+
+function logMessage(sender, text, type = 'INFO') {
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] [${type}] ${sender}: ${text}\n`;
+    logStream.write(logEntry);
+    console.log(logEntry.trim());
+}
 
 function getWeightKeyboard(productId) {
     const weightOptions = {
@@ -343,6 +353,9 @@ bot.on('text', async (ctx) => {
     const message = ctx.message;
     const userId = ctx.from.id;
     const messageText = ctx.message.text;
+
+    const sender = ctx.from.first_name + (ctx.from.username ? ` (@${ctx.from.username})` : '') + ` (ID: ${userId})`;
+    logMessage(sender, messageText, ADMIN_IDS.includes(chatId) ? 'ADMIN' : 'CLIENT');
 
     // === 1. АДМИНСКИЕ КОМАНДЫ ===
 
